@@ -1,0 +1,35 @@
+name: Update RSS
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Pythonを準備
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 必要な部品をインストール
+        run: pip install requests beautifulsoup4
+
+      - name: RSSを作成
+        run: python scrape.py
+
+      - name: 変更があれば保存
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add rss.xml
+          git diff --cached --quiet || git commit -m "Update rss.xml"
+          git push

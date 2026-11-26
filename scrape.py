@@ -1,5 +1,6 @@
 import re
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from email.utils import format_datetime
 from urllib.parse import urljoin
@@ -14,8 +15,16 @@ FEED_DESC = "京大医学部ニュースの「お知らせ」カテゴリを自�
 OUTPUT_FILE = "rss.xml"
 JST = timezone(timedelta(hours=9))
 
+# 取得に失敗した時のやり直し設定（回数と、待つ秒数）
+MAX_TRIES = 4
+WAIT_SECONDS = [30, 60, 120]
+
 # 「2026/11/4」のような日付を読み取る目印
 DATE_PATTERN = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})")
+
+
+class FetchFailed(Exception):
+    """サイトからページを取得できなかった時に使う"""
 
 
 def clean(text):
@@ -23,12 +32,28 @@ def clean(text):
     return re.sub(r"\s*\n\s*", " ", text).strip()
 
 
-def fetch_items():
+def fetch_page():
     headers = {"User-Agent": "Mozilla/5.0 (compatible; KyotoMed-rss/1.0; personal use)"}
-    res = requests.get(PAGE_URL, headers=headers, timeout=30)
-    res.raise_for_status()
+    last_error = None
+    for attempt in range(1, MAX_TRIES + 1):
+        try:
+            res = requests.get(PAGE_URL, headers=headers, timeout=30)
+            res.raise_for_status()
+            return res.content
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            print(f"取得に失敗しました（{attempt}/{MAX_TRIES}回目）: {e}")
+            if attempt < MAX_TRIES:
+                wait = WAIT_SECONDS[attempt - 1]
+                print(f"{wait}秒待ってやり直します。")
+                time.sleep(wait)
+    raise FetchFailed(str(last_error))
+
+
+def fetch_items():
+    content = fetch_page()
     # 文字化け防止のため、バイト列をそのまま渡してBeautifulSoupに判定させる
-    soup = BeautifulSoup(res.content, "html.parser")
+    soup = BeautifulSoup(content, "html.parser")
 
     items = []
     seen = set()
@@ -89,7 +114,15 @@ def build_rss(items):
 
 
 def main():
-    items = fetch_items()
+    try:
+        items = fetch_items()
+    except FetchFailed as e:
+        # サイト側の一時的な不調と考えられるので、今あるrss.xmlをそのまま残して終わる。
+        # 次回の自動実行（6時間後）でまた試す。
+        print(f"何度試してもページを取得できませんでした: {e}")
+        print("今回は rss.xml を更新せず、そのまま終了します。")
+        sys.exit(0)
+
     if not items:
         # ページの作りが変わって1件も取れなかった時は、空のRSSで上書きしない
         print("記事が1件も取れませんでした。ページ構造が変わった可能性があります。")
